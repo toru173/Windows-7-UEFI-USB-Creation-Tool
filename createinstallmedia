@@ -1,20 +1,21 @@
 #!/bin/bash
 #
-# Usage: ./createinstallmedia /path/to/win10.iso /dev/diskX
+# Usage: ./createinstallmedia /path/to/win7.iso /dev/diskX
 # Must be run as root
 #
-# This is a tool created to solve a specific need - to create a Windows 10
-# installation USB for legacy BIOS systems using MBR, with minimal additional
+# This is a tool created to solve a specific need - to create a Windows 7
+# installation USB for modern UEIF systems using GPT, with minimal additional
 # tools, on macOS. A couple of interesting things to note:
 #
 # - macOS has long included a tool to format NTFS-compatible partitions,
 #   possibly since macOS Sierra as part of the Boot Camp Assistant program
 # - macOS has had the ability to mount NTFS volumes read/write since at least
 #   Mac OS X Snow Leopard
-# - macOS has included fdisk for a long time. The man page is dated 2002!
 #
-# The only external utility required is ms-sys, available at http://ms-sys.sourceforge.net.
-# A compiled macOS binary is included here for ease of use.
+# The steps required to make a bootable drive are simple - all is required is
+# that the files are in the right spot. This tool largely automates the steps
+# at http://woshub.com/how-to-create-uefi-bootable-usb-drive-to-install-windows-7/
+# and http://woshub.com/how-to-repair-deleted-efi-partition-in-windows-7/
 #
 # createinstallemedia mimics Apple's 'createinstallmedia' binary, documented at
 # https://support.apple.com/HT201372
@@ -39,7 +40,7 @@ function ctrl_c() {
     exit 1
 }
 
-USAGE_STRING="Usage: ./createinstallmedia /path/to/win10.iso /dev/diskX\nMust be run as root"
+USAGE_STRING="Usage: ./createinstallmedia /path/to/win7.iso /dev/diskX\nMust be run as root"
 
 if [ $# != 2 ]; then
     echo -e $USAGE_STRING
@@ -53,7 +54,8 @@ fi
 
 WINDOWS_ISO=$1
 TARGET_DISK=$2
-TARGET_VOLUME="${TARGET_DISK}s1"
+EFI_VOLUME="${TARGET_DISK}s1"
+TARGET_VOLUME="${TARGET_DISK}s2"
 
 FORMAT_NTFS=/System/Library/Filesystems/ntfs.fs/Contents/Resources/BootCampFormatter
 
@@ -76,11 +78,11 @@ while true; do
     echo "Type (N) if you wish to exit."
 done
 
-mkdir -p "$PWD"/.mnt/{image,target}
+mkdir -p "$PWD"/.mnt/{image,target,efi}
 hdiutil attach "$WINDOWS_ISO" -nobrowse -mountpoint "$PWD"/.mnt/image &> /dev/null
 
 if [ $? != 0 ]; then
-    echo "Error: Unable to mount Windows 10 image file"
+    echo "Error: Unable to mount Windows image file"
     echo "($WINDOWS_ISO)"
     rm -rf "$PWD"/.mnt
     exit 1
@@ -90,7 +92,7 @@ echo -n "Erasing disk"
 
 
 if [ $DRYRUN = false ]; then
-    diskutil quiet eraseDisk exfat Untitled MBR $TARGET_DISK &
+    diskutil quiet eraseDisk exfat Untitled GPT $TARGET_DISK &
     while [ $(pgrep -n -x diskutil) ]; do
         sleep 1
         echo -n "."
@@ -106,12 +108,12 @@ if [ $? != 0 ]; then
 fi
 
 # If we're here, we've been able to partition a disk and we have an iso at
-# $WINDOWS_ISO mounted at $PWD/.mnt
+# $WINDOWS_ISO mounted at $PWD/.mnt/image
 
 if [ $DRYRUN = false ]; then
     diskutil unmountDisk $TARGET_DISK &> /dev/null
     wait
-    $FORMAT_NTFS -v "Install Windows 10" $TARGET_VOLUME &> /dev/null &
+    $FORMAT_NTFS -v "Install Windows 7" $TARGET_VOLUME &> /dev/null &
     while [ $(pgrep -n -x BootCampFormatter) ]; do
         echo -n "."
         sleep 1
@@ -125,6 +127,7 @@ if [ $DRYRUN = false ]; then
     mount -w -t ntfs -o rw,nobrowse $TARGET_VOLUME "$PWD"/.mnt/target
 fi
 
+
 if [ $DRYRUN = false ]; then
     rsync -ar "$PWD"/.mnt/image/* "$PWD"/.mnt/target &> /dev/null &
     while [ $(pgrep -n -x rsync) ]; do
@@ -132,28 +135,23 @@ if [ $DRYRUN = false ]; then
         echo -n "."
     done
     echo ""
-    echo "Copy complete."
-    diskutil unmountDisk $TARGET_DISK &> /dev/null
-    wait
 fi
 
+echo "Copy complete."
 echo "Making disk bootable..."
+echo -n "Copying boot files..."
 
 if [ $DRYRUN = false ]; then
-    diskutil unmountDisk $TARGET_DISK &> /dev/null
+    diskutil mount -mountPoint "$PWD"/.mnt/efi $EFI_VOLUME &> /dev/null
     wait
-    echo $'flag 1\nwrite\nexit' | fdisk -e $TARGET_DISK &> /dev/null
-fi
-
-echo "Copying boot files..."
-
-if [ $DRYRUN = false ]; then
-    diskutil unmountDisk $TARGET_DISK &> /dev/null
-    wait
-    "$PWD"/ms-sys/ms-sys -n $TARGET_VOLUME &> /dev/null
-    diskutil unmountDisk $TARGET_DISK &> /dev/null
-    wait
-    "$PWD"/ms-sys/ms-sys -7 $TARGET_DISK &> /dev/null
+    mkdir -p "$PWD"/.mnt/efi/EFI/{,MICROSOFT}/BOOT
+    rsync -ar "$PWD"/.mnt/image/efi/microsoft/boot/* "$PWD"/.mnt/efi/EFI/MICROSOFT/BOOT &
+    while [ $(pgrep -n -x rsync) ]; do
+        sleep 1
+        echo -n "."
+    done
+    cp "$PWD"/bootmgfw.efi "$PWD"/.mnt/efi/EFI/BOOT/BOOTX64.EFI
+    echo ""
 fi
 
 diskutil unmountDisk $TARGET_DISK &> /dev/null
@@ -166,4 +164,4 @@ echo "Done."
 
 diskutil mount $TARGET_VOLUME  &> /dev/null
 wait
-open "/Volumes/Install Windows 10"
+open "/Volumes/Install Windows 7"
